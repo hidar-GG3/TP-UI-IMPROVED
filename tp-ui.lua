@@ -1,4 +1,6 @@
--- Full GUI with Player tab Speed control + Noclip (fixed per request)
+-- Full TPUI — complete GUI backbone with fixed CreateTextboxToggle and RenameTab
+-- Visuals / layout kept consistent with original; no page-area buttons auto-instantiated.
+
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
@@ -19,39 +21,47 @@ ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 local PAGE_W, PAGE_H = 400, 250
 local TAB_W = 60
 local TAB_H = 220
-local EDGE_GAP = 10
 local PAGE_BTN_MARGIN = 20
 local PAGE_BTN_HEIGHT = 40
 local PAGE_BTN_GAPY = 10
+
+-- helper: add corner
+local function addCorner(inst, radius)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, radius or 6)
+    c.Parent = inst
+    return c
+end
+
+-- helper: add RGB outline (animating)
+local function addRGBOutline(frame, thickness)
+    local outline = Instance.new("UIStroke")
+    outline.Thickness = thickness or 2
+    outline.Color = Color3.fromHSV(0, 1, 1)
+    outline.Parent = frame
+    spawn(function()
+        local hue = 0
+        while outline.Parent do
+            hue = (hue + 0.002) % 1
+            outline.Color = Color3.fromHSV(hue, 1, 1)
+            task.wait(0.01)
+        end
+    end)
+    return outline
+end
 
 -- Page frame (draggable, spawn a bit higher)
 local PageMain = Instance.new("Frame")
 PageMain.Name = "PageMain"
 PageMain.Size = UDim2.new(0, PAGE_W, 0, PAGE_H)
-PageMain.Position = UDim2.new(0.3, 0, 0.22, 0) -- slightly higher
+PageMain.Position = UDim2.new(0.3, 0, 0.22, 0)
 PageMain.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
 PageMain.Active = true
 PageMain.Draggable = true
 PageMain.BorderSizePixel = 0
 PageMain.Parent = ScreenGui
-
-local PageCorner = Instance.new("UICorner")
-PageCorner.CornerRadius = UDim.new(0, 10)
-PageCorner.Parent = PageMain
-
--- RGB outline for PageMain
-local PageOutline = Instance.new("UIStroke")
-PageOutline.Thickness = 2
-PageOutline.Color = Color3.fromHSV(0, 1, 1)
-PageOutline.Parent = PageMain
-spawn(function()
-    local hue = 0
-    while PageOutline.Parent do
-        hue = (hue + 0.002) % 1
-        PageOutline.Color = Color3.fromHSV(hue, 1, 1)
-        task.wait(0.01)
-    end
-end)
+addCorner(PageMain, 10)
+addRGBOutline(PageMain)
 
 -- Pages holder
 local Pages = Instance.new("Frame")
@@ -72,24 +82,8 @@ TabMain.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
 TabMain.BorderSizePixel = 0
 TabMain.ClipsDescendants = true
 TabMain.Parent = ScreenGui
-
-local TabCorner = Instance.new("UICorner")
-TabCorner.CornerRadius = UDim.new(0, 10)
-TabCorner.Parent = TabMain
-
--- RGB outline for TabMain
-local TabOutline = Instance.new("UIStroke")
-TabOutline.Thickness = 2
-TabOutline.Color = Color3.fromHSV(0, 1, 1)
-TabOutline.Parent = TabMain
-spawn(function()
-    local hue = 0
-    while TabOutline.Parent do
-        hue = (hue + 0.002) % 1
-        TabOutline.Color = Color3.fromHSV(hue, 1, 1)
-        task.wait(0.01)
-    end
-end)
+addCorner(TabMain, 10)
+addRGBOutline(TabMain)
 
 -- keep TabMain height in sync
 local function SyncTabHeight()
@@ -98,14 +92,7 @@ end
 PageMain:GetPropertyChangedSignal("AbsoluteSize"):Connect(SyncTabHeight)
 SyncTabHeight()
 
--- helpers
-local function addCorner(inst, radius)
-    local c = Instance.new("UICorner")
-    c.CornerRadius = UDim.new(0, radius)
-    c.Parent = inst
-    return c
-end
-
+-- small button factories
 local function makeTextButton(parent, size, pos, bg, txt)
     local b = Instance.new("TextButton")
     b.Size = size
@@ -136,6 +123,7 @@ local function makePageButton(parent, size, pos, bg, txt)
     return b
 end
 
+-- CreatePage
 local function CreatePage(name)
     local page = Instance.new("Frame")
     page.Name = name
@@ -149,8 +137,8 @@ local function CreatePage(name)
     return page
 end
 
--- Create tab and page objects
-local PlayerPage = CreatePage("PlayerPage") -- first tab is Player
+-- Create pages and set current page
+local PlayerPage = CreatePage("PlayerPage")
 local TPToolPage = CreatePage("TPToolPage")
 local Tab3Page = CreatePage("Tab3Page")
 local Tab4Page = CreatePage("Tab4Page")
@@ -166,8 +154,12 @@ TabScroll.BackgroundTransparency = 1
 TabScroll.BorderSizePixel = 0
 TabScroll.Parent = TabMain
 
--- create tab buttons
+-- Tab registry
 local tabIndex = 0
+local TabButtonsByName = {}
+local TabButtonsArray = {}
+
+-- CreateTab (registers buttons and wires switching)
 local function CreateTab(name, pageFrame)
     local GAP = 8
     local BTN_SIDE = TAB_W - 25
@@ -191,17 +183,53 @@ local function CreateTab(name, pageFrame)
         end
     end)
 
+    -- register
+    TabButtonsByName[name] = btn
+    table.insert(TabButtonsArray, btn)
+
     return btn
 end
 
--- Create 5 tabs
+-- RenameTab(key, newName)
+-- key: string (old name) or number (index)
+local function RenameTab(key, newName)
+    if type(newName) ~= "string" then return false end
+    if type(key) == "string" then
+        local btn = TabButtonsByName[key]
+        if btn and btn.Parent then
+            TabButtonsByName[newName] = btn
+            TabButtonsByName[key] = nil
+            btn.Text = newName
+            return true
+        end
+        return false
+    elseif type(key) == "number" then
+        local btn = TabButtonsArray[key]
+        if btn and btn.Parent then
+            local oldName
+            for n,b in pairs(TabButtonsByName) do
+                if b == btn then oldName = n; break end
+            end
+            if oldName then TabButtonsByName[oldName] = nil end
+            TabButtonsByName[newName] = btn
+            btn.Text = newName
+            return true
+        end
+        return false
+    else
+        return false
+    end
+end
+
+-- Create 5 tabs (names preserved)
 CreateTab("Player", PlayerPage)
 CreateTab("TP Tool", TPToolPage)
 CreateTab("Tab3", Tab3Page)
 CreateTab("Tab4", Tab4Page)
 CreateTab("Tab5", Tab5Page)
 
--- Toggle helper (kept, but not instantiating page-area cosmetic buttons)
+-- CreateToggleButton factory
+-- Returns: btn, square, api {Set = fn, Get = fn}
 local function CreateToggleButton(parent, text, yPos, onToggle)
     local enabled = false
     local btn = makePageButton(parent, UDim2.new(1, -(PAGE_BTN_MARGIN * 2), 0, PAGE_BTN_HEIGHT), UDim2.new(0, PAGE_BTN_MARGIN, 0, yPos), Color3.fromRGB(200,0,0), text)
@@ -231,28 +259,41 @@ local function CreateToggleButton(parent, text, yPos, onToggle)
         end
     end)
 
-    return btn, square
+    local function SetState(b)
+        enabled = b and true or false
+        square.BackgroundColor3 = enabled and Color3.fromRGB(0,255,0) or Color3.fromRGB(255,255,255)
+        if onToggle then
+            local ok, err = pcall(function() onToggle(enabled) end)
+            if not ok then warn("Toggle callback error:", err) end
+        end
+    end
+    local function GetState() return enabled end
+
+    return btn, square, { Set = SetState, Get = GetState }
 end
 
-local function CreateTextboxToggle(parent, yPos, placeholder, onToggle)
+-- CreateTextboxToggle factory (fixed)
+-- CreateTextboxToggle(parent, yPos, labelText, onToggle)
+-- returns { container, input, toggle, Enabled, Set }
+local function CreateTextboxToggle(parent, yPos, labelText, onToggle)
     local enabled = false
 
-    local container = makePageButton(parent, UDim2.new(1, -(PAGE_BTN_MARGIN*2), 0, PAGE_BTN_HEIGHT), UDim2.new(0, PAGE_BTN_MARGIN, 0, yPos), Color3.fromRGB(200,0,0), "")
+    local container = makePageButton(parent, UDim2.new(1, -(PAGE_BTN_MARGIN * 2), 0, PAGE_BTN_HEIGHT), UDim2.new(0, PAGE_BTN_MARGIN, 0, yPos), Color3.fromRGB(200,0,0), "")
     addCorner(container, 6)
 
-    -- Center label "Speed" (added)
+    -- center label
     local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, -130, 1, 0) -- leave room for left & right elements
+    label.Size = UDim2.new(1, -130, 1, 0)
     label.Position = UDim2.new(0, 60, 0, 0)
     label.BackgroundTransparency = 1
-    label.Text = "Speed"
+    label.Text = tostring(labelText or "Label")
     label.TextColor3 = Color3.fromRGB(255,255,255)
     label.Font = Enum.Font.GothamBold
     label.TextSize = 16
     label.TextXAlignment = Enum.TextXAlignment.Center
     label.Parent = container
 
-    -- TextBox (left) - starts at "1"
+    -- textbox (left)
     local input = Instance.new("TextBox")
     input.Size = UDim2.new(0, 44, 0, PAGE_BTN_HEIGHT - 10)
     input.Position = UDim2.new(0, 6, 0, 5)
@@ -267,7 +308,7 @@ local function CreateTextboxToggle(parent, yPos, placeholder, onToggle)
     input.Parent = container
     addCorner(input, 4)
 
-    -- Toggle square (right)
+    -- toggle square (right)
     local toggleBtn = Instance.new("TextButton")
     toggleBtn.Size = UDim2.new(0, 22, 0, 22)
     toggleBtn.Position = UDim2.new(1, -34, 0.5, 0)
@@ -290,15 +331,12 @@ local function CreateTextboxToggle(parent, yPos, placeholder, onToggle)
         end
     end
 
-    -- Clicking container toggles, unless editing the textbox
+    -- clicking container toggles (unless editing)
     container.MouseButton1Click:Connect(function()
-        if UserInputService:GetFocusedTextBox() == input then
-            return
-        end
+        if UserInputService:GetFocusedTextBox() == input then return end
         setState(not enabled)
     end)
 
-    -- clicking the square also toggles
     toggleBtn.MouseButton1Click:Connect(function()
         setState(not enabled)
     end)
@@ -310,17 +348,23 @@ local function CreateTextboxToggle(parent, yPos, placeholder, onToggle)
         end
     end)
 
-    return {
-        container = container,
-        input = input,
-        toggle = toggleBtn,
-        Enabled = enabled,
-        Set = setState
-    }
+    return { container = container, input = input, toggle = toggleBtn, Enabled = enabled, Set = setState }
 end
 
+-- CreateCosmeticButton (simple press button)
+local function CreateCosmeticButton(parent, text, yPos, onClick)
+    local btn = makePageButton(parent, UDim2.new(1, -(PAGE_BTN_MARGIN * 2), 0, PAGE_BTN_HEIGHT), UDim2.new(0, PAGE_BTN_MARGIN, 0, yPos), Color3.fromRGB(200,0,0), text)
+    addCorner(btn, 6)
+    if onClick then
+        btn.MouseButton1Click:Connect(function()
+            local ok, err = pcall(onClick)
+            if not ok then warn("Cosmetic button error:", err) end
+        end)
+    end
+    return btn
+end
 
--- Noclip toggle
+-- Noclip factory (kept, not instantiated)
 local function setCharacterCollision(state)
     local char = LocalPlayer.Character
     if not char then return end
@@ -333,17 +377,11 @@ end
 
 local function CreateNoclipToggle(parent, yPos)
     return CreateToggleButton(parent, "Noclip", yPos, function(enabled)
-        if enabled then
-            setCharacterCollision(false)
-        else
-            setCharacterCollision(true)
-        end
+        if enabled then setCharacterCollision(false) else setCharacterCollision(true) end
     end)
 end
 
-CreateNoclipToggle(PlayerPage, 20 + PAGE_BTN_HEIGHT + PAGE_BTN_GAPY + 4)
-
--- GUI hide/show button
+-- GUI hide/show button (kept)
 local ToggleButton = Instance.new("TextButton")
 ToggleButton.Size = UDim2.new(0, 40, 0, 40)
 ToggleButton.Position = UDim2.new(0.05, 0, 0.02, 0)
@@ -365,3 +403,19 @@ ToggleButton.MouseButton1Click:Connect(function()
     PageMain.Visible = isVisible
     TabMain.Visible = isVisible
 end)
+
+-- Expose API globals for convenience (optional)
+_G.TPUI_RenameTab = RenameTab
+_G.TPUI_CreateToggleButton = CreateToggleButton
+_G.TPUI_CreateTextboxToggle = CreateTextboxToggle
+_G.TPUI_CreateCosmeticButton = CreateCosmeticButton
+_G.TPUI_CreatePage = CreatePage
+_G.TPUI_Pages = {
+    Player = PlayerPage,
+    TPTool = TPToolPage,
+    Tab3 = Tab3Page,
+    Tab4 = Tab4Page,
+    Tab5 = Tab5Page
+}
+
+-- End of TPUI backbone
