@@ -234,13 +234,6 @@ local function CreateToggleButton(parent, text, yPos, onToggle)
     return btn, square
 end
 
--- -------------------------
--- TextboxToggle for Speed (fixed + centered label)
--- -------------------------
-local speedValue = 1
-local speedEnabled = false
-local speedHeartbeatConn = nil
-
 local function CreateTextboxToggle(parent, yPos, placeholder, onToggle)
     local enabled = false
 
@@ -326,30 +319,6 @@ local function CreateTextboxToggle(parent, yPos, placeholder, onToggle)
     }
 end
 
--- Create the speed TextboxToggle
-local speedControl = CreateTextboxToggle(PlayerPage, 20, "1", function(val, enabled)
-    speedValue = tonumber(val) or 1
-    speedEnabled = enabled
-
-    if speedHeartbeatConn then
-        speedHeartbeatConn:Disconnect()
-        speedHeartbeatConn = nil
-    end
-
-    if enabled then
-        speedHeartbeatConn = RunService.Heartbeat:Connect(function()
-            local char = LocalPlayer.Character
-            if not speedEnabled or not char then return end
-            local hrp = char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart
-            if hrp then
-                local look = hrp.CFrame.LookVector
-                local newPos = hrp.Position + look * speedValue
-                local ok, err = pcall(function() LocalPlayer.Character:MoveTo(newPos) end)
-                if not ok then warn("MoveTo failed:", err) end
-            end
-        end)
-    end
-end)
 
 -- Noclip toggle
 local function setCharacterCollision(state)
