@@ -1,4 +1,4 @@
--- Full TPUI — complete GUI backbone with fixed CreateTextboxToggle and RenameTab
+-- Full TPUI — complete GUI backbone with clean CreateButton / CreateToggle / CreateTextbox / RenameTab API
 -- Visuals / layout kept consistent with original; no page-area buttons auto-instantiated.
 
 local Players = game:GetService("Players")
@@ -92,7 +92,7 @@ end
 PageMain:GetPropertyChangedSignal("AbsoluteSize"):Connect(SyncTabHeight)
 SyncTabHeight()
 
--- small button factories
+-- small button factories (kept as tiny low-level helpers)
 local function makeTextButton(parent, size, pos, bg, txt)
     local b = Instance.new("TextButton")
     b.Size = size
@@ -190,9 +190,205 @@ local function CreateTab(name, pageFrame)
     return btn
 end
 
--- RenameTab(key, newName)
--- key: string (old name) or number (index)
-local function RenameTab(key, newName)
+-- New TPUI library (simple API)
+local TPUI = {}
+
+-- Helper: resolve a page by name or direct Frame
+local function resolvePage(pageOrName)
+    if type(pageOrName) == "string" then
+        -- accept either exact keys we exported below ("Player", "TPTool", "Tab3", etc.)
+        local map = {
+            Player = PlayerPage,
+            TPTool = TPToolPage,
+            Tab3 = Tab3Page,
+            Tab4 = Tab4Page,
+            Tab5 = Tab5Page
+        }
+        return map[pageOrName] or Pages:FindFirstChild(pageOrName) or nil
+    elseif typeof(pageOrName) == "Instance" and pageOrName:IsA("Frame") then
+        return pageOrName
+    else
+        return nil
+    end
+end
+
+-- Helper: compute next Y offset on a page by looking at existing children layout
+local function getNextY(page)
+    -- find bottom-most point used by direct children and place next after gap
+    local maxBottom = PAGE_BTN_GAPY -- start small margin
+    for _, child in ipairs(page:GetChildren()) do
+        if child:IsA("GuiObject") then
+            -- only consider objects placed with absolute offsets (common for our buttons)
+            local yPos = 0
+            local h = 0
+            if child.Position and child.Size then
+                -- use offset fallback if scale used
+                yPos = child.Position.Y.Offset or 0
+                h = child.Size.Y.Offset or 0
+            end
+            local bottom = yPos + h
+            if bottom > maxBottom then maxBottom = bottom end
+        end
+    end
+    return maxBottom + PAGE_BTN_GAPY
+end
+
+--[[
+    TPUI:CreateButton(pageOrName, text, onClick)
+    - pageOrName: string (e.g. "Player") or Frame
+    - text: button text
+    - onClick: function() called when pressed (pcall wrapped)
+    Returns: the TextButton instance
+]]
+function TPUI:CreateButton(pageOrName, text, onClick)
+    local page = resolvePage(pageOrName)
+    if not page then
+        warn("TPUI:CreateButton - invalid page:", pageOrName)
+        return nil
+    end
+    local y = getNextY(page)
+    local btn = makePageButton(page, UDim2.new(1, -(PAGE_BTN_MARGIN * 2), 0, PAGE_BTN_HEIGHT),
+        UDim2.new(0, PAGE_BTN_MARGIN, 0, y), Color3.fromRGB(200,0,0), tostring(text or "Button"))
+    addCorner(btn, 6)
+    if onClick then
+        btn.MouseButton1Click:Connect(function()
+            local ok, err = pcall(onClick)
+            if not ok then warn("TPUI button callback error:", err) end
+        end)
+    end
+    return btn
+end
+
+--[[
+    TPUI:CreateToggle(pageOrName, text, default, onToggle)
+    - pageOrName: string or Frame
+    - text: label text shown on the right
+    - default: boolean initial state
+    - onToggle: function(state) called on change (pcall wrapped)
+    Returns: btn, square, api { Set = fn, Get = fn }
+    Usage: TPUI:CreateToggle("Player","Noclip",false,function(s) ... end)
+]]
+function TPUI:CreateToggle(pageOrName, text, default, onToggle)
+    local page = resolvePage(pageOrName)
+    if not page then
+        warn("TPUI:CreateToggle - invalid page:", pageOrName)
+        return nil
+    end
+    local y = getNextY(page)
+    local enabled = default and true or false
+    local btn = makePageButton(page, UDim2.new(1, -(PAGE_BTN_MARGIN * 2), 0, PAGE_BTN_HEIGHT),
+        UDim2.new(0, PAGE_BTN_MARGIN, 0, y), Color3.fromRGB(200,0,0), tostring(text or "Toggle"))
+    addCorner(btn, 6)
+    btn.TextXAlignment = Enum.TextXAlignment.Right
+
+    local square = Instance.new("Frame")
+    square.Size = UDim2.new(0, 20, 0, 20)
+    square.Position = UDim2.new(0, 8, 0.5, 0)
+    square.AnchorPoint = Vector2.new(0, 0.5)
+    square.BackgroundColor3 = enabled and Color3.fromRGB(0,255,0) or Color3.fromRGB(255,255,255)
+    square.BorderSizePixel = 0
+    square.Parent = btn
+    addCorner(square, 4)
+    local outline = Instance.new("UIStroke")
+    outline.Thickness = 2
+    outline.Color = Color3.fromRGB(255,255,255)
+    outline.Parent = square
+
+    local function callCallback(state)
+        if onToggle then
+            local ok, err = pcall(function() onToggle(state) end)
+            if not ok then warn("TPUI toggle callback error:", err) end
+        end
+    end
+
+    btn.MouseButton1Click:Connect(function()
+        enabled = not enabled
+        square.BackgroundColor3 = enabled and Color3.fromRGB(0,255,0) or Color3.fromRGB(255,255,255)
+        callCallback(enabled)
+    end)
+
+    local function SetState(b)
+        enabled = b and true or false
+        square.BackgroundColor3 = enabled and Color3.fromRGB(0,255,0) or Color3.fromRGB(255,255,255)
+        callCallback(enabled)
+    end
+    local function GetState() return enabled end
+
+    return btn, square, { Set = SetState, Get = GetState }
+end
+
+--[[
+    TPUI:CreateTextbox(pageOrName, placeholderOrLabel, onSubmit)
+    - pageOrName: string or Frame
+    - placeholderOrLabel: string shown on the button's label / placeholder
+    - onSubmit: function(text) called when focus lost or Enter pressed (pcall wrapped)
+    Returns: container, input, api { SetText = fn, GetText = fn }
+    Usage: TPUI:CreateTextbox("Player", "Name", function(t) print(t) end)
+]]
+function TPUI:CreateTextbox(pageOrName, placeholderOrLabel, onSubmit)
+    local page = resolvePage(pageOrName)
+    if not page then
+        warn("TPUI:CreateTextbox - invalid page:", pageOrName)
+        return nil
+    end
+    local y = getNextY(page)
+
+    local container = makePageButton(page, UDim2.new(1, -(PAGE_BTN_MARGIN * 2), 0, PAGE_BTN_HEIGHT),
+        UDim2.new(0, PAGE_BTN_MARGIN, 0, y), Color3.fromRGB(200,0,0), "")
+    addCorner(container, 6)
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -130, 1, 0)
+    label.Position = UDim2.new(0, 60, 0, 0)
+    label.BackgroundTransparency = 1
+    label.Text = tostring(placeholderOrLabel or "Input")
+    label.TextColor3 = Color3.fromRGB(255,255,255)
+    label.Font = Enum.Font.GothamBold
+    label.TextSize = 16
+    label.TextXAlignment = Enum.TextXAlignment.Center
+    label.Parent = container
+
+    local input = Instance.new("TextBox")
+    input.Size = UDim2.new(0, 180, 0, PAGE_BTN_HEIGHT - 10)
+    input.Position = UDim2.new(0, 6, 0, 5)
+    input.BackgroundColor3 = Color3.fromRGB(30,30,30)
+    input.TextColor3 = Color3.fromRGB(255,255,255)
+    input.Font = Enum.Font.Gotham
+    input.TextSize = 16
+    input.PlaceholderText = ""
+    input.ClearTextOnFocus = false
+    input.TextEditable = true
+    input.Text = ""
+    input.Parent = container
+    addCorner(input, 4)
+
+    local function callCallback(text)
+        if onSubmit then
+            local ok, err = pcall(function() onSubmit(text) end)
+            if not ok then warn("TPUI textbox callback error:", err) end
+        end
+    end
+
+    input.FocusLost:Connect(function(enterPressed)
+        callCallback(input.Text)
+    end)
+
+    local api = {
+        SetText = function(t) input.Text = tostring(t or "") end,
+        GetText = function() return input.Text end
+    }
+
+    return container, input, api
+end
+
+--[[
+    TPUI:RenameTab(key, newName)
+    - key: string (old name) or number (index)
+    - newName: string
+    Returns: true on success, false otherwise
+    Example: TPUI:RenameTab("Player", "Me") or TPUI:RenameTab(1, "Me")
+]]
+function TPUI:RenameTab(key, newName)
     if type(newName) ~= "string" then return false end
     if type(key) == "string" then
         local btn = TabButtonsByName[key]
@@ -228,143 +424,7 @@ CreateTab("Tab3", Tab3Page)
 CreateTab("Tab4", Tab4Page)
 CreateTab("Tab5", Tab5Page)
 
--- CreateToggleButton factory
--- Returns: btn, square, api {Set = fn, Get = fn}
-local function CreateToggleButton(parent, text, yPos, onToggle)
-    local enabled = false
-    local btn = makePageButton(parent, UDim2.new(1, -(PAGE_BTN_MARGIN * 2), 0, PAGE_BTN_HEIGHT), UDim2.new(0, PAGE_BTN_MARGIN, 0, yPos), Color3.fromRGB(200,0,0), text)
-    btn.TextXAlignment = Enum.TextXAlignment.Right
-    addCorner(btn, 6)
-
-    local square = Instance.new("Frame")
-    square.Size = UDim2.new(0, 20, 0, 20)
-    square.Position = UDim2.new(0, 8, 0.5, 0)
-    square.AnchorPoint = Vector2.new(0, 0.5)
-    square.BackgroundColor3 = Color3.fromRGB(255,255,255)
-    square.BorderSizePixel = 0
-    square.Parent = btn
-    addCorner(square, 4)
-
-    local outline = Instance.new("UIStroke")
-    outline.Thickness = 2
-    outline.Color = Color3.fromRGB(255,255,255)
-    outline.Parent = square
-
-    btn.MouseButton1Click:Connect(function()
-        enabled = not enabled
-        square.BackgroundColor3 = enabled and Color3.fromRGB(0,255,0) or Color3.fromRGB(255,255,255)
-        if onToggle then
-            local ok, err = pcall(function() onToggle(enabled) end)
-            if not ok then warn("Toggle callback error:", err) end
-        end
-    end)
-
-    local function SetState(b)
-        enabled = b and true or false
-        square.BackgroundColor3 = enabled and Color3.fromRGB(0,255,0) or Color3.fromRGB(255,255,255)
-        if onToggle then
-            local ok, err = pcall(function() onToggle(enabled) end)
-            if not ok then warn("Toggle callback error:", err) end
-        end
-    end
-    local function GetState() return enabled end
-
-    return btn, square, { Set = SetState, Get = GetState }
-end
-
--- CreateTextboxToggle factory (fixed)
--- CreateTextboxToggle(parent, yPos, labelText, onToggle)
--- returns { container, input, toggle, Enabled, Set }
-local function CreateTextboxToggle(parent, yPos, labelText, onToggle)
-    local enabled = false
-
-    local container = makePageButton(parent, UDim2.new(1, -(PAGE_BTN_MARGIN * 2), 0, PAGE_BTN_HEIGHT), UDim2.new(0, PAGE_BTN_MARGIN, 0, yPos), Color3.fromRGB(200,0,0), "")
-    addCorner(container, 6)
-
-    -- center label
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, -130, 1, 0)
-    label.Position = UDim2.new(0, 60, 0, 0)
-    label.BackgroundTransparency = 1
-    label.Text = tostring(labelText or "Label")
-    label.TextColor3 = Color3.fromRGB(255,255,255)
-    label.Font = Enum.Font.GothamBold
-    label.TextSize = 16
-    label.TextXAlignment = Enum.TextXAlignment.Center
-    label.Parent = container
-
-    -- textbox (left)
-    local input = Instance.new("TextBox")
-    input.Size = UDim2.new(0, 44, 0, PAGE_BTN_HEIGHT - 10)
-    input.Position = UDim2.new(0, 6, 0, 5)
-    input.BackgroundColor3 = Color3.fromRGB(30,30,30)
-    input.TextColor3 = Color3.fromRGB(255,255,255)
-    input.Font = Enum.Font.Gotham
-    input.TextSize = 16
-    input.PlaceholderText = ""
-    input.ClearTextOnFocus = false
-    input.TextEditable = true
-    input.Text = "1"
-    input.Parent = container
-    addCorner(input, 4)
-
-    -- toggle square (right)
-    local toggleBtn = Instance.new("TextButton")
-    toggleBtn.Size = UDim2.new(0, 22, 0, 22)
-    toggleBtn.Position = UDim2.new(1, -34, 0.5, 0)
-    toggleBtn.AnchorPoint = Vector2.new(0, 0.5)
-    toggleBtn.BackgroundColor3 = Color3.fromRGB(255,255,255)
-    toggleBtn.Text = ""
-    toggleBtn.Parent = container
-    addCorner(toggleBtn, 4)
-    local toggleOutline = Instance.new("UIStroke")
-    toggleOutline.Thickness = 2
-    toggleOutline.Color = Color3.fromRGB(255,255,255)
-    toggleOutline.Parent = toggleBtn
-
-    local function setState(b)
-        enabled = b and true or false
-        toggleBtn.BackgroundColor3 = enabled and Color3.fromRGB(0,255,0) or Color3.fromRGB(255,255,255)
-        if onToggle then
-            local ok, err = pcall(function() onToggle(input.Text, enabled) end)
-            if not ok then warn("TextboxToggle callback error:", err) end
-        end
-    end
-
-    -- clicking container toggles (unless editing)
-    container.MouseButton1Click:Connect(function()
-        if UserInputService:GetFocusedTextBox() == input then return end
-        setState(not enabled)
-    end)
-
-    toggleBtn.MouseButton1Click:Connect(function()
-        setState(not enabled)
-    end)
-
-    input.FocusLost:Connect(function()
-        if onToggle then
-            local ok, err = pcall(function() onToggle(input.Text, enabled) end)
-            if not ok then warn("TextboxToggle callback error:", err) end
-        end
-    end)
-
-    return { container = container, input = input, toggle = toggleBtn, Enabled = enabled, Set = setState }
-end
-
--- CreateCosmeticButton (simple press button)
-local function CreateCosmeticButton(parent, text, yPos, onClick)
-    local btn = makePageButton(parent, UDim2.new(1, -(PAGE_BTN_MARGIN * 2), 0, PAGE_BTN_HEIGHT), UDim2.new(0, PAGE_BTN_MARGIN, 0, yPos), Color3.fromRGB(200,0,0), text)
-    addCorner(btn, 6)
-    if onClick then
-        btn.MouseButton1Click:Connect(function()
-            local ok, err = pcall(onClick)
-            if not ok then warn("Cosmetic button error:", err) end
-        end)
-    end
-    return btn
-end
-
--- Noclip factory (kept, not instantiated)
+-- Noclip factory (kept, now uses TPUI:CreateToggle)
 local function setCharacterCollision(state)
     local char = LocalPlayer.Character
     if not char then return end
@@ -376,9 +436,11 @@ local function setCharacterCollision(state)
 end
 
 local function CreateNoclipToggle(parent, yPos)
-    return CreateToggleButton(parent, "Noclip", yPos, function(enabled)
+    -- NOTE: The library auto-positions buttons; pass the page name or Frame.
+    local btn, square, api = TPUI:CreateToggle(parent, "Noclip", false, function(enabled)
         if enabled then setCharacterCollision(false) else setCharacterCollision(true) end
     end)
+    return btn, square, api
 end
 
 -- GUI hide/show button (kept)
@@ -405,10 +467,7 @@ ToggleButton.MouseButton1Click:Connect(function()
 end)
 
 -- Expose API globals for convenience (optional)
-_G.TPUI_RenameTab = RenameTab
-_G.TPUI_CreateToggleButton = CreateToggleButton
-_G.TPUI_CreateTextboxToggle = CreateTextboxToggle
-_G.TPUI_CreateCosmeticButton = CreateCosmeticButton
+_G.TPUI = TPUI
 _G.TPUI_CreatePage = CreatePage
 _G.TPUI_Pages = {
     Player = PlayerPage,
